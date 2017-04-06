@@ -176,6 +176,40 @@ void classifyTextNonText(const vector<ConnectedComponent>&connectedComponents) {
         }
     }
 }
+bool horizontalOverlap(Rect i, Rect j) {
+    return max(0, std::min(i.y + i.height, j.y + j.height) - std::max(i.y, j.y)) > 0;
+}
+
+void mergeTextualConnectedComponentsIntoLines(const vector<ConnectedComponent> &textualConnectedComponents) {
+    int size = textualConnectedComponents.size();
+    vector<bool> classifiedConnectedComponents(size, false);
+    vector<vector<ConnectedComponent>> textLines;
+    for (int i = 0; i < size; i++) {
+        ConnectedComponent connectedComponent = textualConnectedComponents[i];
+        vector<ConnectedComponent> textLine;
+        classifiedConnectedComponents[i] = true;
+        for (int j = 0; j < size; j++) {
+            if (classifiedConnectedComponents[j] == true)
+                continue;
+            ConnectedComponent connectedComponent2 = textualConnectedComponents[i];
+            if (!horizontalOverlap(connectedComponent.boundingBox, connectedComponent2.boundingBox))
+                continue;
+            bool d_ij = (connectedComponent2.topLeft.x - connectedComponent.boundingBox.x) > 0;
+            int H_i = connectedComponent.height;
+            int H_j = connectedComponent2.height;
+            int maxH_ij = max(H_i, H_j);
+            int minH_ij = min(H_i, H_j);
+
+            int anded = maxH_ij & minH_ij;
+
+            if (d_ij <= anded && anded >= 0.5 * maxH_ij) {
+                textLine.push_back(connectedComponent2);
+                classifiedConnectedComponents[j] = true;
+            }
+        }
+        textLines.push_back(textLine);
+    }
+}
 
 int main(int argc, char**argv) {
     if(argc!=2) {
