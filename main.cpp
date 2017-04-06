@@ -8,10 +8,12 @@
 using namespace std;
 using namespace cv;
 
-// Threshold for OTSU binarizer
+// Threshold for OTSU binarization algorithm
 #define OTSU_THRESHOLD 0.6
-// How to classify two areas as appoximating each other
+// How to classify two areas as approximating each other
 #define THRESHOLD_AREA_APPROXIMATION 0.8
+// How to classify two filled rectangles as close to each other
+#define DISTANCE_SIZE_RATIO 0.1
 
 /**
  * This function computes connected components from an input binary image
@@ -119,6 +121,7 @@ void findConnectedComponents(const Mat&imageBinary, vector<ConnectedComponent>&c
 void classifyTextNonText(const vector<ConnectedComponent>&connectedComponents) {
     vector<ConnectedComponent>textual;
     vector<ConnectedComponent>nonTextual;
+    vector<ConnectedComponent>filled;
     int connectedComponentsSize=connectedComponents.size();
 
     for (int i = 0; i < connectedComponentsSize; i++) {
@@ -162,8 +165,9 @@ void classifyTextNonText(const vector<ConnectedComponent>&connectedComponents) {
                 // In an addition to find the color table candidates, the CCi is classified the
                 // non-text element if CCi’s filled area is big and approximate
                 // AB i .
-                else if ((area / ((float) connectedComponent.numPixels))>=THRESHOLD_AREA_APPROXIMATION) {
+                if ((area / ((float) connectedComponent.numPixels))>=THRESHOLD_AREA_APPROXIMATION) {
                     isTextual = false;
+                    filled.push_back(connectedComponent);
                 }
             }
         }
@@ -189,7 +193,7 @@ void mergeTextualConnectedComponentsIntoLines(const vector<ConnectedComponent> &
         vector<ConnectedComponent> textLine;
         classifiedConnectedComponents[i] = true;
         for (int j = 0; j < size; j++) {
-            if (classifiedConnectedComponents[j] == true)
+            if (classifiedConnectedComponents[j])
                 continue;
             ConnectedComponent connectedComponent2 = textualConnectedComponents[i];
             if (!horizontalOverlap(connectedComponent.boundingBox, connectedComponent2.boundingBox))
@@ -208,6 +212,70 @@ void mergeTextualConnectedComponentsIntoLines(const vector<ConnectedComponent> &
             }
         }
         textLines.push_back(textLine);
+    }
+}
+
+float inline euclideanDist(Point p, Point q) {
+    Point diff = p - q;
+    return cv::sqrt(diff.x * diff.x + diff.y * diff.y);
+}
+
+float distanceBetweenRectangles(Rect a, Rect b) {
+    if((a&b).area()!=0)
+        return 0;
+
+    float x1=a.x;
+    float y1=a.y;
+    float x1b=a.x+a.width;
+    float y1b=a.y+a.height;
+
+    float x2=b.x;
+    float y2=b.y;
+    float x2b=b.x+b.width;
+    float y2b=b.y+b.height;
+
+    bool left = x2b < x1;
+    bool right = x1b < x2;
+    bool bottom = y2b < y1;
+    bool top = y1b < y2;
+    if(top && left)
+        return euclideanDist(Point(x1, y1b), Point(x2b, y2));
+    else if(left && bottom)
+        return euclideanDist(Point(x1, y1), Point(x2b, y2b));
+    else if(bottom && right)
+        return euclideanDist(Point(x1b, y1), Point(x2, y2b));
+    else if(right && top)
+        return euclideanDist(Point(x1b, y1b), Point(x2, y2));
+    else if(left)
+        return x1 - x2b;
+    else if (right)
+        return x2 - x1b;
+    else if (bottom)
+        return y1 - y2b;
+    else if (top)
+        return y2 - y1b;
+
+}
+
+void coloredTableDetection(const vector<ConnectedComponent> &filledConnectedComponents) {
+    int size = filledConnectedComponents.size();
+    vector<vector<ConnectedComponent>> groupedConnectedComponents;
+    vector<bool> checkedConnectedComponents(size, false);
+    for (int i = 0; i < size; i++) {
+        ConnectedComponent connectedComponent = filledConnectedComponents[i];
+        checkedConnectedComponents[i]=true;
+        vector<ConnectedComponent>group;
+        for(int j=0;j<size;j++) {
+            if(checkedConnectedComponents[i])
+                continue;
+            ConnectedComponent connectedComponent2=filledConnectedComponents[j];
+            float distance=distanceBetweenRectangles(connectedComponent.boundingBox,connectedComponent2.boundingBox);
+            float size=min(connectedComponent.boundingBoxSize,connectedComponent2.boundingBoxSize);
+            if(distance/size<DISTANCE_SIZE_RATIO) {
+                group.push_back(connectedComponent2);
+            }
+        }
+        group.push_back(connectedComponent);
     }
 }
 
