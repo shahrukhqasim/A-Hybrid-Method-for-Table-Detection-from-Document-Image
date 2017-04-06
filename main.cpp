@@ -8,7 +8,10 @@
 using namespace std;
 using namespace cv;
 
+// Threshold for OTSU binarizer
 #define OTSU_THRESHOLD 0.6
+// How to classify two areas as appoximating each other
+#define THRESHOLD_AREA_APPROXIMATION 0.8
 
 /**
  * This function computes connected components from an input binary image
@@ -110,6 +113,67 @@ void findConnectedComponents(const Mat&imageBinary, vector<ConnectedComponent>&c
         connectedComponent.boundingBoxSize=rect.area();
 
         connectedComponents.push_back(connectedComponent);
+    }
+}
+
+void classifyTextNonText(const vector<ConnectedComponent>&connectedComponents) {
+    vector<ConnectedComponent>textual;
+    vector<ConnectedComponent>nonTextual;
+    int connectedComponentsSize=connectedComponents.size();
+
+    for (int i = 0; i < connectedComponentsSize; i++) {
+        ConnectedComponent connectedComponent = connectedComponents[i];
+        bool isTextual=true;
+        // 1. If CC has low area (<6 pixels)
+        if (connectedComponent.boundingBoxSize < 6) {
+            isTextual=false;
+        }
+        // 3. The ratio of CCi’s area with the area of B(CCi) (the density of CCi) is too low (less than 6%)
+        else if ((((float) connectedComponent.numPixels) / connectedComponent.boundingBoxSize) < 0.06) {
+            isTextual=false;
+        }
+        else {
+            float ratio = (connectedComponent.width / ((float) connectedComponent.height));
+            // 4. The ratio of the width of B(CCi) and the height of B(CCi) is too low or too high (less than 0.06 or greater than 16)
+            if (ratio < 0.06 || ratio > 15) {
+                isTextual=false;
+            }
+            else {
+                // 2. The bounding box of ith connected components contains many other bounding box (B(CCi) contains more than 3 B(CCj)).
+                int numBoxesWithin = 0;
+                int area = 0;
+                for (int j = 0; j < connectedComponentsSize; j++) {
+                    // If both connected components are same, skip
+                    if (i == j)
+                        continue;
+                    ConnectedComponent connectedComponent2 = connectedComponents[j];
+                    Rect checkRect = connectedComponent2.boundingBox;
+                    // If checkRect is within the connected component
+                    if ((connectedComponent.boundingBox & checkRect).area() == checkRect.area()) {
+                        numBoxesWithin++;
+                        area += connectedComponent2.numPixels;
+                    }
+                }
+                // Add own area
+                area += connectedComponent.numPixels;
+                if (numBoxesWithin >= 3) {
+                    isTextual = false;
+                }
+                // In an addition to find the color table candidates, the CCi is classified the
+                // non-text element if CCi’s filled area is big and approximate
+                // AB i .
+                else if ((area / ((float) connectedComponent.numPixels))>=THRESHOLD_AREA_APPROXIMATION) {
+                    isTextual = false;
+                }
+            }
+        }
+
+        if(isTextual) {
+            textual.push_back(connectedComponent);
+        }
+        else {
+            nonTextual.push_back(connectedComponent);
+        }
     }
 }
 
