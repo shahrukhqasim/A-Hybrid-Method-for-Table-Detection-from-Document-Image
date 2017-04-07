@@ -12,8 +12,12 @@ using namespace cv;
 #define OTSU_THRESHOLD 0.6
 // How to classify two areas as approximating each other
 #define THRESHOLD_AREA_APPROXIMATION 0.8
+// How to classify if density of CC is low in Close/Non-close table detection
+#define CLOSE_NON_CLOSE_RULING_LINES_LOW_DENSITY_THRESHOLD 0.8
 // How to classify two filled rectangles as close to each other
 #define DISTANCE_SIZE_RATIO 0.1
+// How to flag combined area of components within approach to area of the parent (table area)
+#define CLOSE_NON_CLOSE_AREA_APPROACHING_THRESHOLD=0.5
 
 /**
  * This function computes connected components from an input binary image
@@ -118,15 +122,15 @@ void findConnectedComponents(const Mat&imageBinary, vector<ConnectedComponent>&c
     }
 }
 
-void classifyTextNonText(const vector<ConnectedComponent>&connectedComponents) {
-    vector<ConnectedComponent>textual;
-    vector<ConnectedComponent>nonTextual;
-    vector<ConnectedComponent>filled;
+void classifyTextNonText(const vector<ConnectedComponent> &connectedComponents, vector<ConnectedComponent> &textual,
+                         vector<ConnectedComponent> &nonTextual,
+                         vector<ConnectedComponent> &filled) {
     int connectedComponentsSize=connectedComponents.size();
 
     for (int i = 0; i < connectedComponentsSize; i++) {
         ConnectedComponent connectedComponent = connectedComponents[i];
         bool isTextual=true;
+        bool isFilled=false;
         // 1. If CC has low area (<6 pixels)
         if (connectedComponent.boundingBoxSize < 6) {
             isTextual=false;
@@ -167,7 +171,7 @@ void classifyTextNonText(const vector<ConnectedComponent>&connectedComponents) {
                 // AB i .
                 if ((area / ((float) connectedComponent.numPixels))>=THRESHOLD_AREA_APPROXIMATION) {
                     isTextual = false;
-                    filled.push_back(connectedComponent);
+                    isFilled=true;
                 }
             }
         }
@@ -175,8 +179,11 @@ void classifyTextNonText(const vector<ConnectedComponent>&connectedComponents) {
         if(isTextual) {
             textual.push_back(connectedComponent);
         }
-        else {
+        else if(!isFilled) {
             nonTextual.push_back(connectedComponent);
+        }
+        else {
+            filled.push_back(connectedComponent);
         }
     }
 }
@@ -218,6 +225,87 @@ void mergeTextualConnectedComponentsIntoLines(const vector<ConnectedComponent> &
         }
         textLines.push_back(textLine);
     }
+}
+
+void detectCloseNonCloseTables(const vector<ConnectedComponent> &textualComponents,
+                               const vector<ConnectedComponent> &nonTextualComponents,
+                               vector<ConnectedComponent> &tabularComponents) {
+    int textualSize=textualComponents.size();
+    int nonTextualSize=nonTextualComponents.size();
+    tabularComponents.clear();
+    for(int i=0;i<nonTextualSize;i++) {
+        ConnectedComponent nonTextualComponent=nonTextualComponents[i];
+        Rect parentConnectedComponentRect=nonTextualComponent.boundingBox;
+        float ratio=nonTextualComponent.numPixels/((float)nonTextualComponent.boundingBoxSize);
+        // 1. If density is not low
+        if(ratio>CLOSE_NON_CLOSE_RULING_LINES_LOW_DENSITY_THRESHOLD) {
+            continue;
+        }
+        // 3. Does not cut any textual or non-textual components
+        bool cuts=false;
+        {
+            // Check if this box is cut by textual connected components
+            for (int i = 0; i < textualComponents.size(); i++) {
+                Rect rect = textualComponents[i].boundingBox;
+                if (!((rect & parentConnectedComponentRect).area() == rect.area() ||
+                      (rect | parentConnectedComponentRect).area() == (rect.area() + parentConnectedComponentRect.area()))) {
+                    cuts = true;
+                    break;
+                }
+            }
+            if(!cuts) {
+                // Check if this box is cut by non-textual connected components
+                for (int i = 0; i < textualComponents.size(); i++) {
+                    Rect rect = textualComponents[i].boundingBox;
+                    if (!((rect & parentConnectedComponentRect).area() == rect.area() ||
+                          (rect | parentConnectedComponentRect).area() ==
+                          (rect.area() + parentConnectedComponentRect.area()))) {
+                        cuts = true;
+                        break;
+                    }
+                }
+            }
+        }
+        if(cuts)
+            continue;
+
+        int numTextWithin=0;
+        int numNonTextWithin=0;
+        float areaTextual=0;
+        float areaNonTextual=0;
+        for (int j=0;j<textualComponents.size();j++) {
+            if(i==j) {
+                continue;
+            }
+            Rect textualRect=textualComponents[i].boundingBox;
+            if((textualRect&parentConnectedComponentRect).area()==textualRect.area()) {
+                numTextWithin++;
+                areaTextual+=textualRect.area();
+            }
+        }
+
+        for (int j=0;j<nonTextualComponents.size();j++) {
+            if(i==j) {
+                continue;
+            }
+            Rect nonTextualRect=nonTextualComponents[i].boundingBox;
+            if((nonTextualRect&parentConnectedComponentRect).area()==nonTextualRect.area()) {
+                numNonTextWithin++;
+                areaNonTextual+=nonTextualRect.area();
+            }
+        }
+        if(numTextWithin<2)
+            continue;
+        if((areaNonTextual+areaTextual/parentConnectedComponentRect.area())<CLOSE_NON_CLOSE_AREA_APPROACHING_THRESHOLD)
+            continue;
+        tabularComponents.push_back(nonTextualComponent);
+    }
+}
+
+void detectParallelTables(const vector<ConnectedComponent> &textualComponents,
+                               const vector<ConnectedComponent> &nonTextualComponents,
+                               vector<ConnectedComponent> &tabularComponents) {
+
 }
 
 float inline euclideanDist(Point p, Point q) {
@@ -262,15 +350,19 @@ float distanceBetweenRectangles(Rect a, Rect b) {
 
 }
 
-void coloredTableDetection(const vector<ConnectedComponent> &filledConnectedComponents, int width, int height) {
+void detectColoredTable(const vector<ConnectedComponent> &filledConnectedComponents,
+                        const vector<ConnectedComponent> &textualConnectedComponents,
+                        const vector<ConnectedComponent> &nonTextualConnectedComponents, int width, int height) {
     int size = filledConnectedComponents.size();
     vector<vector<ConnectedComponent>> groupedConnectedComponents;
+    vector<Rect> groupRects;
     vector<vector<ConnectedComponent>> tabularGroupedConnectedComponents;
     vector<bool> checkedConnectedComponents(size, false);
     for (int i = 0; i < size; i++) {
         ConnectedComponent connectedComponent = filledConnectedComponents[i];
         checkedConnectedComponents[i]=true;
         vector<ConnectedComponent>group;
+        Rect groupBoundingRect=connectedComponent.boundingBox;
         for(int j=0;j<size;j++) {
             // If it has already been grouped (or if it is the same as ith)
             if(checkedConnectedComponents[i])
@@ -283,9 +375,11 @@ void coloredTableDetection(const vector<ConnectedComponent> &filledConnectedComp
             // If two rectangles are close to each other, we can group them together
             if(distance/size<DISTANCE_SIZE_RATIO) {
                 group.push_back(connectedComponent2);
+                groupBoundingRect=groupBoundingRect|connectedComponent2.boundingBox;
             }
         }
         group.push_back(connectedComponent);
+        groupRects.push_back(groupBoundingRect);
     }
     int numGroups = groupedConnectedComponents.size();
     vector<bool> areGroupsTabular(numGroups, false);
@@ -349,12 +443,12 @@ void coloredTableDetection(const vector<ConnectedComponent> &filledConnectedComp
                 Rect groupRect=group[i].boundingBox;
                 int columnNumber=-1;
                 int rowNumber=-1;
-                for(int j=0;j<rowRects.size();j++) {
+                for(int j=0;j<numRows;j++) {
                     if((groupRect&rowRects[j]).area()>0) {
                         rowNumber=j;
                     }
                 }
-                for(int j=0;j<columnRects.size();j++) {
+                for(int j=0;j<numCols;j++) {
                     if((groupRect&columnRects[j]).area()>0) {
                         columnNumber=j;
                     }
@@ -376,6 +470,26 @@ void coloredTableDetection(const vector<ConnectedComponent> &filledConnectedComp
                 }
             }
         }
+        {
+            Rect groupRect=groupRects[i];
+            // Check if this box is cut by textual connected components
+            for(int i=0;i<textualConnectedComponents.size();i++) {
+                Rect rect=textualConnectedComponents[i].boundingBox;
+                if(!((rect&groupRect).area()==rect.area()||(rect|groupRect).area()==(rect.area()+groupRect.area()))) {
+                    isGroupATable=false;
+                    break;
+                }
+            }
+            // Check if this box is cut by non-textual connected components
+            for(int i=0;i<nonTextualConnectedComponents.size();i++) {
+                Rect rect=nonTextualConnectedComponents[i].boundingBox;
+                if(!((rect&groupRect).area()==rect.area()||(rect|groupRect).area()==(rect.area()+groupRect.area()))) {
+                    isGroupATable=false;
+                    break;
+                }
+            }
+        }
+
         if(isGroupATable) {
             tabularGroupedConnectedComponents.push_back(group);
         }
