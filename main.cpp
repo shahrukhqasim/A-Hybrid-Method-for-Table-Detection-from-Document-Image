@@ -184,6 +184,11 @@ bool horizontalOverlap(Rect i, Rect j) {
     return max(0, std::min(i.y + i.height, j.y + j.height) - std::max(i.y, j.y)) > 0;
 }
 
+bool verticalOverlap(Rect i, Rect j) {
+    return max(0, std::min(i.x + i.width, j.x + j.width) - std::max(i.x, j.x)) > 0;
+}
+
+
 void mergeTextualConnectedComponentsIntoLines(const vector<ConnectedComponent> &textualConnectedComponents) {
     int size = textualConnectedComponents.size();
     vector<bool> classifiedConnectedComponents(size, false);
@@ -257,25 +262,123 @@ float distanceBetweenRectangles(Rect a, Rect b) {
 
 }
 
-void coloredTableDetection(const vector<ConnectedComponent> &filledConnectedComponents) {
+void coloredTableDetection(const vector<ConnectedComponent> &filledConnectedComponents, int width, int height) {
     int size = filledConnectedComponents.size();
     vector<vector<ConnectedComponent>> groupedConnectedComponents;
+    vector<vector<ConnectedComponent>> tabularGroupedConnectedComponents;
     vector<bool> checkedConnectedComponents(size, false);
     for (int i = 0; i < size; i++) {
         ConnectedComponent connectedComponent = filledConnectedComponents[i];
         checkedConnectedComponents[i]=true;
         vector<ConnectedComponent>group;
         for(int j=0;j<size;j++) {
+            // If it has already been grouped (or if it is the same as ith)
             if(checkedConnectedComponents[i])
                 continue;
             ConnectedComponent connectedComponent2=filledConnectedComponents[j];
+            // Compute minimum distance between two rectangles
             float distance=distanceBetweenRectangles(connectedComponent.boundingBox,connectedComponent2.boundingBox);
+            // Comute the min of size of two boxes
             float size=min(connectedComponent.boundingBoxSize,connectedComponent2.boundingBoxSize);
+            // If two rectangles are close to each other, we can group them together
             if(distance/size<DISTANCE_SIZE_RATIO) {
                 group.push_back(connectedComponent2);
             }
         }
         group.push_back(connectedComponent);
+    }
+    int numGroups = groupedConnectedComponents.size();
+    vector<bool> areGroupsTabular(numGroups, false);
+    for (int i = 0; i < numGroups; i++) {
+        vector<ConnectedComponent> group = groupedConnectedComponents[i];
+        int groupSize=group.size();
+        vector<int> verticalProjections(width, 0);
+        vector<int> horizontalProjections(height, 0);
+
+        // Compute horizontal and vertical projections of bounding boxes
+        for (int j = 0; j < groupSize; j++) {
+            Rect box = group[j].boundingBox;
+            for (int k = box.x; k < box.x + box.width; k++)
+                verticalProjections[k] += box.height;
+            for (int k = box.y; k < box.y + box.height; k++)
+                verticalProjections[k] += box.width;
+        }
+        vector<Rect>columnRects;
+        {
+            bool currentStatus = false;
+            int startPoint = -1;
+
+            for (int i = 0; i < verticalProjections.size(); i++) {
+                bool newStatus = verticalProjections[i] > 0;
+                if (newStatus != currentStatus) {
+                    if (newStatus == true) {
+                        startPoint = i;
+                    } else {
+                        // push the rect here
+                        int endPoint = i;
+                        columnRects.push_back(Rect(startPoint, 0, endPoint - startPoint, height));
+                    }
+                    currentStatus = newStatus;
+                }
+            }
+        }
+        vector<Rect>rowRects;
+        {
+            bool currentStatus = false;
+            int startPoint = -1;
+
+            for (int i = 0; i < horizontalProjections.size(); i++) {
+                bool newStatus = horizontalProjections[i] > 0;
+                if (newStatus != currentStatus) {
+                    if (newStatus == true) {
+                        startPoint = i;
+                    } else {
+                        // push the rect here
+                        int endPoint = i;
+                        columnRects.push_back(Rect(startPoint, 0, endPoint - startPoint, width));
+                    }
+                    currentStatus = newStatus;
+                }
+            }
+        }
+        int numRows=rowRects.size();
+        int numCols=columnRects.size();
+        vector<Point2i>rowColNumbers(groupSize,Point2i(-1,-1));
+        {
+            for(int i=0;i<groupSize;i++) {
+                Rect groupRect=group[i].boundingBox;
+                int columnNumber=-1;
+                int rowNumber=-1;
+                for(int j=0;j<rowRects.size();j++) {
+                    if((groupRect&rowRects[j]).area()>0) {
+                        rowNumber=j;
+                    }
+                }
+                for(int j=0;j<columnRects.size();j++) {
+                    if((groupRect&columnRects[j]).area()>0) {
+                        columnNumber=j;
+                    }
+                }
+                assert(columnNumber!=0);
+                assert(rowNumber!=0);
+            }
+        }
+        bool isGroupATable=true;
+        {
+            for(int i=0;i<rowColNumbers.size();i++) {
+                for(int j=0;j<rowColNumbers.size();j++) {
+                    if(i==j)
+                        continue;
+                    if(rowColNumbers[i]==rowColNumbers[j]) {
+                        isGroupATable=false;
+                        break;
+                    }
+                }
+            }
+        }
+        if(isGroupATable) {
+            tabularGroupedConnectedComponents.push_back(group);
+        }
     }
 }
 
